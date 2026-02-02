@@ -54,6 +54,7 @@ claw-readme --json
 
 - **package.json**: name, description, version, scripts, bin commands
 - **Entry points**: CLI commands from switch/case patterns
+- **Flags**: Command-line options/flags detected in source code
 - **Git remote**: GitHub user/repo for badges
 - **License**: From LICENSE file or package.json
 

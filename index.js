@@ -88,6 +88,7 @@ const analysis = {
   keywords: pkg.keywords || [],
   main: pkg.main || 'index.js',
   commands: [],
+  flags: [],
   usage: [],
   github: null,
 };
@@ -148,8 +149,38 @@ for (const entryPath of filesToAnalyze) {
         let match;
         while ((match = pattern.exec(code)) !== null) {
           const cmd = match[1];
-          if (cmd && !['help', 'version', 'default', 'true', 'false', 'command', 'cmd', 'action'].includes(cmd.toLowerCase())) {
+          if (cmd && !['help', 'version', 'default', 'true', 'false', 'command', 'cmd', 'action', 'error', 'exit'].includes(cmd.toLowerCase())) {
             analysis.commands.push(cmd);
+          }
+        }
+      }
+
+      // Look for flag patterns
+      const flagPatterns = [
+        // strict comparisons: === '--flag', case '--flag', .includes('--flag')
+        /(?:===|==|case|includes\(|indexOf\()\s*['"`](-{1,2}[\w-]+)['"`]/g,
+        // minimist/yargs style: argv.flag or opts.flag (matches 'flag' then we prepend --)
+        /(?:argv|opts|flags)\.([a-zA-Z0-9_]+)/g,
+      ];
+
+      for (const pattern of flagPatterns) {
+        let match;
+        while ((match = pattern.exec(code)) !== null) {
+          let flag = match[1];
+          // If it came from property access (argv.foo), add --
+          if (!flag.startsWith('-')) {
+            if (flag.length === 1) flag = '-' + flag;
+            else flag = '--' + flag;
+          }
+          
+          if (flag && !['--', '-', '-1', '---', '--help', '-h', '--push', '--pop', '--shift', '--unshift', '--slice', '--splice', '--map', '--filter', '--reduce', '--forEach', '--find', '--join', '--includes', '--indexOf', '--toString', '--length', '--concat'].includes(flag)) {
+             // Check if it's a common variable name disguised as a flag
+             if (['--flag', '--cmd', '--opt', '--arg', '--args', '--foo', '--bar'].includes(flag)) continue;
+
+             // Basic validation: starts with - and has letters
+             if (/^-{1,2}[a-zA-Z]/.test(flag)) {
+                analysis.flags.push(flag);
+             }
           }
         }
       }
@@ -165,6 +196,8 @@ for (const entryPath of filesToAnalyze) {
 
 // Dedupe commands
 analysis.commands = [...new Set(analysis.commands)];
+// Dedupe flags
+analysis.flags = [...new Set(analysis.flags)].sort();
 
 // Build bin commands
 const binCommands = Object.keys(analysis.bin);
@@ -224,6 +257,17 @@ if (analysis.commands.length > 0) {
   readme += '|---------|-------------|\n';
   for (const cmd of analysis.commands) {
     readme += `| \`${cmd}\` | |\n`;
+  }
+  readme += '\n';
+}
+
+// Flags
+if (analysis.flags.length > 0) {
+  readme += `### Options\n\n`;
+  readme += '| Option | Description |\n';
+  readme += '|--------|-------------|\n';
+  for (const flag of analysis.flags) {
+    readme += `| \`${flag}\` | |\n`;
   }
   readme += '\n';
 }
