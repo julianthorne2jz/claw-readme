@@ -1,0 +1,16 @@
+{
+  "name": "claw-readme",
+  "version": "1.0.0",
+  "description": "Generate README.md from code analysis for AI agents",
+  "main": "index.js",
+  "bin": {
+    "claw-readme": "./index.js"
+  },
+  "scripts": {
+    "test": "node index.js --help"
+  },
+  "keywords": ["readme", "generator", "cli", "ai-agent", "documentation"],
+  "author": "Julian Thorne",
+  "license": "MIT",
+  "type": "commonjs"
+}
