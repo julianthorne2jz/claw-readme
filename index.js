@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const args = process.argv.slice(2);
 
@@ -42,6 +43,7 @@ What it analyzes:
   • Entry point (CLI commands, usage patterns)
   • Existing LICENSE file
   • Git remote for badges
+  • CLI --help output (dynamic analysis)
 `);
   process.exit(0);
 }
@@ -116,18 +118,74 @@ if (!analysis.github) {
   } catch (e) {}
 }
 
-// Determine which files to analyze for commands
+// Helper: Parse help output
+function parseHelpOutput(output) {
+  const result = { commands: [], flags: [] };
+  const lines = output.split('\n');
+  let section = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // Detect sections
+    if (/^(Commands|Usage|Options|Flags):/i.test(trimmed)) {
+      section = trimmed.split(':')[0].toLowerCase();
+      continue;
+    }
+
+    if (!trimmed) continue;
+
+    if (section === 'commands') {
+      // Match "  command    Description"
+      const match = line.match(/^\s{2,}(\w[\w-]*)\s+(.+)$/);
+      if (match) {
+        result.commands.push({ name: match[1], desc: match[2] });
+      }
+    } else if (section === 'options' || section === 'flags') {
+      // Match "  --flag     Description" or "  -f, --flag Description"
+      const match = line.match(/^\s{2,}(-[a-zA-Z0-9-]+(?:,\s+-[a-zA-Z0-9-]+)*)\s+(.+)$/);
+      if (match) {
+        // clean up flag names
+        const names = match[1].split(',').map(s => s.trim());
+        const primary = names.find(n => n.startsWith('--')) || names[0];
+        result.flags.push({ name: primary, desc: match[2] });
+      }
+    }
+  }
+  return result;
+}
+
+// Dynamic Analysis: Try to run --help
+let dynamicData = { commands: [], flags: [] };
+const mainFile = path.join(absPath, analysis.main);
+
+if (fs.existsSync(mainFile)) {
+  try {
+    const result = spawnSync('node', [mainFile, '--help'], { 
+      encoding: 'utf-8', 
+      timeout: 2000, // Don't hang
+      cwd: absPath,  // Run in project dir
+      env: { ...process.env, FORCE_COLOR: '0' } // Strip ANSI
+    });
+
+    if (result.stdout) {
+      dynamicData = parseHelpOutput(result.stdout);
+    }
+  } catch (e) {
+    // Ignore execution errors
+  }
+}
+
+// Static Analysis (fallback/supplement)
+const staticCommands = new Set();
+const staticFlags = new Set();
+
 const filesToAnalyze = new Set();
-
-// Add main entry point
-filesToAnalyze.add(path.join(absPath, analysis.main));
-
-// Add bin entry points
+filesToAnalyze.add(mainFile);
 for (const binPath of Object.values(analysis.bin)) {
   filesToAnalyze.add(path.join(absPath, binPath));
 }
 
-// Analyze entry points for CLI commands
 for (const entryPath of filesToAnalyze) {
   if (fs.existsSync(entryPath)) {
     try {
@@ -135,13 +193,9 @@ for (const entryPath of filesToAnalyze) {
       
       // Look for command patterns
       const commandPatterns = [
-        // case 'command': pattern
         /case\s+['"`](\w+)['"`]\s*:/g,
-        // args[0] === 'command' pattern
         /args\[0\]\s*===?\s*['"`](\w+)['"`]/g,
-        // command === 'command' pattern  
         /command\s*===?\s*['"`](\w+)['"`]/g,
-        // if (command === 'command') pattern
         /if\s*\(\s*\w+\s*===?\s*['"`](\w+)['"`]\s*\)/g,
       ];
       
@@ -150,16 +204,14 @@ for (const entryPath of filesToAnalyze) {
         while ((match = pattern.exec(code)) !== null) {
           const cmd = match[1];
           if (cmd && !['help', 'version', 'default', 'true', 'false', 'command', 'cmd', 'action', 'error', 'exit'].includes(cmd.toLowerCase())) {
-            analysis.commands.push(cmd);
+            staticCommands.add(cmd);
           }
         }
       }
 
       // Look for flag patterns
       const flagPatterns = [
-        // strict comparisons: === '--flag', case '--flag', .includes('--flag')
         /(?:===|==|case|includes\(|indexOf\()\s*['"`](-{1,2}[\w-]+)['"`]/g,
-        // minimist/yargs style: argv.flag or opts.flag (matches 'flag' then we prepend --)
         /(?:argv|opts|flags)\.([a-zA-Z0-9_]+)/g,
       ];
 
@@ -167,25 +219,19 @@ for (const entryPath of filesToAnalyze) {
         let match;
         while ((match = pattern.exec(code)) !== null) {
           let flag = match[1];
-          // If it came from property access (argv.foo), add --
           if (!flag.startsWith('-')) {
             if (flag.length === 1) flag = '-' + flag;
             else flag = '--' + flag;
           }
-          
           if (flag && !['--', '-', '-1', '---', '--help', '-h', '--push', '--pop', '--shift', '--unshift', '--slice', '--splice', '--map', '--filter', '--reduce', '--forEach', '--find', '--join', '--includes', '--indexOf', '--toString', '--length', '--concat'].includes(flag)) {
-             // Check if it's a common variable name disguised as a flag
              if (['--flag', '--cmd', '--opt', '--arg', '--args', '--foo', '--bar'].includes(flag)) continue;
-
-             // Basic validation: starts with - and has letters
              if (/^-{1,2}[a-zA-Z]/.test(flag)) {
-                analysis.flags.push(flag);
+                staticFlags.add(flag);
              }
           }
         }
       }
       
-      // Look for usage examples in comments
       const usageMatch = code.match(/Usage:\s*(.+)/i);
       if (usageMatch) {
         analysis.usage.push(usageMatch[1].trim());
@@ -194,10 +240,28 @@ for (const entryPath of filesToAnalyze) {
   }
 }
 
-// Dedupe commands
-analysis.commands = [...new Set(analysis.commands)];
-// Dedupe flags
-analysis.flags = [...new Set(analysis.flags)].sort();
+// Merge Dynamic and Static Data
+// Commands
+const commandMap = new Map();
+// Add static commands (no desc)
+staticCommands.forEach(cmd => commandMap.set(cmd, ''));
+// Add dynamic commands (overwrite with desc)
+dynamicData.commands.forEach(cmd => commandMap.set(cmd.name, cmd.desc));
+
+analysis.commands = Array.from(commandMap.entries())
+  .map(([name, desc]) => ({ name, desc }))
+  .sort((a, b) => a.name.localeCompare(b.name));
+
+// Flags
+const flagMap = new Map();
+// Add static flags
+staticFlags.forEach(flag => flagMap.set(flag, ''));
+// Add dynamic flags
+dynamicData.flags.forEach(flag => flagMap.set(flag.name, flag.desc));
+
+analysis.flags = Array.from(flagMap.entries())
+  .map(([name, desc]) => ({ name, desc }))
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 // Build bin commands
 const binCommands = Object.keys(analysis.bin);
@@ -256,7 +320,7 @@ if (analysis.commands.length > 0) {
   readme += '| Command | Description |\n';
   readme += '|---------|-------------|\n';
   for (const cmd of analysis.commands) {
-    readme += `| \`${cmd}\` | |\n`;
+    readme += `| \`${cmd.name}\` | ${cmd.desc || ''} |\n`;
   }
   readme += '\n';
 }
@@ -267,7 +331,7 @@ if (analysis.flags.length > 0) {
   readme += '| Option | Description |\n';
   readme += '|--------|-------------|\n';
   for (const flag of analysis.flags) {
-    readme += `| \`${flag}\` | |\n`;
+    readme += `| \`${flag.name}\` | ${flag.desc || ''} |\n`;
   }
   readme += '\n';
 }
@@ -278,8 +342,8 @@ readme += '```bash\n';
 if (binCommands.length > 0) {
   const mainBin = binCommands[0];
   if (analysis.commands.length > 0) {
-    readme += `# ${analysis.commands[0]}\n`;
-    readme += `${mainBin} ${analysis.commands[0]}\n`;
+    readme += `# ${analysis.commands[0].desc || analysis.commands[0].name}\n`;
+    readme += `${mainBin} ${analysis.commands[0].name}\n`;
   } else {
     readme += `${mainBin}\n`;
   }
@@ -313,7 +377,7 @@ if (flags.stdout) {
   console.log(`✅ Generated README.md (${readme.length} bytes)`);
   console.log(`   📦 ${analysis.name} v${analysis.version}`);
   if (analysis.commands.length > 0) {
-    console.log(`   🔧 Commands: ${analysis.commands.join(', ')}`);
+    console.log(`   🔧 Commands: ${analysis.commands.map(c => c.name).join(', ')}`);
   }
   if (analysis.github) {
     console.log(`   🔗 GitHub: ${analysis.github.user}/${analysis.github.repo}`);
