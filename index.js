@@ -58,7 +58,7 @@ if (!fs.existsSync(absPath)) {
 
 // Check for existing README
 const readmePath = path.join(absPath, 'README.md');
-if (fs.existsSync(readmePath) && !flags.force && !flags.stdout && !flags.json) {
+if (fs.existsSync(readmePath) && !flags.force && !flags.stdout && !(!flags.human && !flags.H)) {
   console.error('Error: README.md already exists. Use --force to overwrite or --stdout to preview.');
   process.exit(1);
 }
@@ -270,7 +270,7 @@ const binCommands = Object.keys(analysis.bin);
 const licenseExists = fs.existsSync(path.join(absPath, 'LICENSE'));
 
 // JSON output
-if (flags.json) {
+if (!flags.human && !flags.H) {
   console.log(JSON.stringify(analysis, null, 2));
   process.exit(0);
 }
