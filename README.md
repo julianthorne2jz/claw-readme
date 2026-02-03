@@ -1,5 +1,16 @@
 # claw-readme
 
+## Install
+
+```bash
+git clone https://github.com/julianthorne2jz/claw-readme
+cd claw-readme
+npm link
+```
+
+Now you can use `claw-readme` from anywhere.
+
+
 Generate README.md from code analysis for AI agents and developers.
 
 ## Why
